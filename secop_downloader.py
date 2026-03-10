@@ -17,6 +17,16 @@ from playwright.sync_api import (
     TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
 )
+<<<<<<< HEAD
+=======
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox
+except Exception:
+    tk = None
+    filedialog = None
+    messagebox = None
+>>>>>>> ca7420adc07d88f60434cb0059058dd8b7061315
 
 
 PROCESS_DIR_NAME = "secop_pdf"
