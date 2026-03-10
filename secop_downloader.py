@@ -1,6 +1,3 @@
-pip install playwright pandas openpyxl tkinterdnd2
-playwright install chromium
-
 import ast
 import csv
 import hashlib
