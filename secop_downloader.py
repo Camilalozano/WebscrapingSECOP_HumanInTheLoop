@@ -5,7 +5,12 @@ import sys
 import time
 import zipfile
 from pathlib import Path
+<<<<<<< HEAD
 from typing import List, Optional, Tuple
+=======
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urljoin
+>>>>>>> 99964055b6403d5ce1e66445f7f15bee2266dad0
 
 import pandas as pd
 from playwright.sync_api import (
@@ -295,7 +300,289 @@ def write_report(report_path: Path, rows: List[dict]) -> None:
         writer.writerows(rows)
 
 
+<<<<<<< HEAD
 def process_url(page, url: str, process_dir: Path, contract_dir: Path, index: int) -> dict:
+=======
+def wait_until_secop_content(page: Page) -> None:
+    wait_for_manual_captcha_resolution(page)
+
+    targets = [
+        "INFORMACIÓN DEL PROCEDIMIENTO",
+        "Información",
+        "Datos del contrato",
+        "Información de la selección",
+    ]
+    for target in targets:
+        try:
+            page.get_by_text(target, exact=False).wait_for(timeout=10000)
+            return
+        except PlaywrightTimeoutError:
+            continue
+
+    time.sleep(2)
+
+
+def find_first_visible(page: Page, selectors: List[Tuple[str, str]]) -> Optional[object]:
+    """
+    selectors: [(mode, value)] con mode in {"text", "role_button", "role_link", "locator"}
+    """
+    for mode, value in selectors:
+        try:
+            if mode == "text":
+                locator = page.get_by_text(value, exact=False)
+            elif mode == "role_button":
+                locator = page.get_by_role("button", name=re.compile(value, re.I))
+            elif mode == "role_link":
+                locator = page.get_by_role("link", name=re.compile(value, re.I))
+            else:
+                locator = page.locator(value)
+
+            count = locator.count()
+            if count > 0:
+                return locator.first
+        except Exception:
+            continue
+    return None
+
+
+def do_scroll(page: Page, steps: int = SCROLL_STEPS) -> None:
+    for _ in range(steps):
+        page.mouse.wheel(0, SCROLL_PIXELS)
+        time.sleep(0.8)
+
+
+def expect_download_with_retry(page: Page, click_fn, timeout: int = 25000) -> Optional[Download]:
+    try:
+        with page.expect_download(timeout=timeout) as info:
+            click_fn()
+        return info.value
+    except Exception:
+        return None
+
+
+def download_process_pdf(page: Page, process_dir: Path, notice_uid: str) -> Tuple[bool, str]:
+    btn = find_first_visible(page, [
+        ("role_button", r"imprimir"),
+        ("text", "Imprimir"),
+        ("locator", "text=Imprimir"),
+    ])
+    if btn is None:
+        return False, ""
+
+    download = expect_download_with_retry(page, lambda: btn.click(timeout=DEFAULT_TIMEOUT))
+    if not download:
+        return False, ""
+
+    dest = process_dir / f"{notice_uid}.pdf"
+    download.save_as(str(dest))
+    return True, str(dest)
+
+
+
+def get_contract_id(page: Page) -> Optional[str]:
+    text = body_text(page)
+    match = re.search(r"CO1\.PCCNTR\.\d+", text)
+    return match.group(0) if match else None
+
+
+
+
+
+
+
+
+
+
+def scroll_until_text(page: Page, text: str, max_steps: int = 10) -> bool:
+    target = text.lower()
+    for _ in range(max_steps):
+        if target in body_text(page).lower():
+            return True
+        page.mouse.wheel(0, SCROLL_PIXELS)
+        time.sleep(0.8)
+    return target in body_text(page).lower()
+
+
+def get_selection_download_link(page: Page):
+    """
+    Busca el link 'Descargar' dentro de la sección
+    'Información de la selección', no en otras secciones.
+    """
+    # Intenta llevar la sección a pantalla
+    scroll_until_text(page, "Información de la selección", max_steps=8)
+
+    # Primer 'Descargar' después del encabezado de la sección
+    xpath_candidates = [
+        "xpath=//*[contains(normalize-space(), 'Información de la selección')]/following::a[contains(normalize-space(), 'Descargar')][1]",
+        "xpath=//*[contains(normalize-space(), 'Información de la selección')]/following::*[contains(normalize-space(), 'Descargar')][1]",
+    ]
+
+    for xp in xpath_candidates:
+        try:
+            locator = page.locator(xp)
+            if locator.count() > 0:
+                return locator.first
+        except Exception:
+            continue
+
+    return None
+
+
+def infer_contract_filename(base_text: str, notice_uid: str) -> str:
+    """
+    Intenta nombrar el PDF del contrato usando:
+    1. CO1.PCCNTR.xxxxx si aparece
+    2. nombre sugerido del archivo
+    3. fallback con notice_uid
+    """
+    if base_text:
+        m = re.search(r"CO1\.PCCNTR\.\d+", base_text)
+        if m:
+            return m.group(0)
+
+        stem = safe_filename(Path(base_text).stem)
+        if stem:
+            return stem
+
+    return f"contrato_{notice_uid}"
+
+
+def save_response_as_pdf(context: BrowserContext, pdf_url: str, dest: Path) -> bool:
+    try:
+        response = context.request.get(pdf_url, timeout=30000)
+        if not response.ok:
+            return False
+
+        content_type = response.headers.get("content-type", "").lower()
+        if "pdf" not in content_type and "octet-stream" not in content_type:
+            # igual intentamos guardar si parece binario descargable
+            pass
+
+        dest.write_bytes(response.body())
+        return True
+    except Exception:
+        return False
+
+
+def download_contract_pdf_from_selection(
+    context: BrowserContext,
+    page: Page,
+    contract_dir: Path,
+    notice_uid: str,
+) -> Tuple[int, List[str], str]:
+    """
+    Descarga el PDF correcto del contrato desde:
+    Información de la selección -> Documentos -> Descargar
+    """
+    downloaded_paths: List[str] = []
+    contract_id = ""
+
+    link = get_selection_download_link(page)
+    if link is None:
+        return 0, downloaded_paths, contract_id
+
+    # Intento 1: si el href ya apunta al PDF o a una descarga directa
+    try:
+        href = link.get_attribute("href")
+    except Exception:
+        href = None
+
+    if href and not href.lower().startswith("javascript"):
+        full_url = urljoin(page.url, href)
+        filename_base = infer_contract_filename(full_url, notice_uid)
+        dest = contract_dir / f"{filename_base}.pdf"
+
+        if save_response_as_pdf(context, full_url, dest):
+            m = re.search(r"CO1\.PCCNTR\.\d+", filename_base)
+            if m:
+                contract_id = m.group(0)
+            downloaded_paths.append(str(dest))
+            return 1, downloaded_paths, contract_id
+
+    # Intento 2: clic que dispara descarga directa
+    try:
+        download = expect_download_with_retry(
+            page,
+            lambda: link.click(timeout=DEFAULT_TIMEOUT),
+            timeout=15000,
+        )
+        if download:
+            suggested = download.suggested_filename or ""
+            filename_base = infer_contract_filename(suggested, notice_uid)
+            dest = contract_dir / f"{filename_base}.pdf"
+
+            if dest.exists():
+                dest = contract_dir / f"{filename_base}_{int(time.time())}.pdf"
+
+            download.save_as(str(dest))
+
+            m = re.search(r"CO1\.PCCNTR\.\d+", filename_base)
+            if m:
+                contract_id = m.group(0)
+
+            downloaded_paths.append(str(dest))
+            return 1, downloaded_paths, contract_id
+    except Exception:
+        pass
+
+    # Intento 3: clic que abre un PDF en otra pestaña
+    old_pages = list(context.pages)
+    old_url = page.url
+
+    try:
+        link.click(timeout=DEFAULT_TIMEOUT)
+        time.sleep(3)
+    except Exception:
+        return 0, downloaded_paths, contract_id
+
+    # ¿Se abrió otra pestaña?
+    new_pages = [p for p in context.pages if p not in old_pages]
+    if new_pages:
+        pdf_page = new_pages[-1]
+        try:
+            pdf_page.wait_for_load_state("domcontentloaded", timeout=15000)
+        except Exception:
+            pass
+
+        pdf_url = pdf_page.url
+        filename_base = infer_contract_filename(pdf_url, notice_uid)
+        dest = contract_dir / f"{filename_base}.pdf"
+
+        if pdf_url and not pdf_url.startswith("blob:") and save_response_as_pdf(context, pdf_url, dest):
+            m = re.search(r"CO1\.PCCNTR\.\d+", filename_base)
+            if m:
+                contract_id = m.group(0)
+
+            downloaded_paths.append(str(dest))
+            return 1, downloaded_paths, contract_id
+
+    # ¿Navegó el tab actual al PDF?
+    current_url = page.url
+    if current_url != old_url and current_url and not current_url.startswith("blob:"):
+        filename_base = infer_contract_filename(current_url, notice_uid)
+        dest = contract_dir / f"{filename_base}.pdf"
+
+        if save_response_as_pdf(context, current_url, dest):
+            m = re.search(r"CO1\.PCCNTR\.\d+", filename_base)
+            if m:
+                contract_id = m.group(0)
+
+            downloaded_paths.append(str(dest))
+            return 1, downloaded_paths, contract_id
+
+    return 0, downloaded_paths, contract_id
+
+
+def process_one_url(
+    context: BrowserContext,
+    page: Page,
+    url: str,
+    index: int,
+    process_dir: Path,
+    contract_dir: Path,
+    screenshot_dir: Path,
+) -> ProcessResult:
+>>>>>>> 99964055b6403d5ce1e66445f7f15bee2266dad0
     notice_uid = extract_notice_uid(url)
     contract_id = None
     process_pdf_saved = False
@@ -310,6 +597,7 @@ def process_url(page, url: str, process_dir: Path, contract_dir: Path, index: in
 
         wait_until_page_is_accessible(page)
 
+<<<<<<< HEAD
         process_pdf_path = download_process_pdf(page, process_dir, notice_uid)
         process_pdf_saved = process_pdf_path is not None
 
@@ -339,6 +627,26 @@ def process_url(page, url: str, process_dir: Path, contract_dir: Path, index: in
                 if contract_id_detected:
                     contract_id = contract_id_detected
                 contract_pdf_saved = contract_pdf_path is not None
+=======
+        # Baja hasta la sección correcta y descarga el PDF del contrato
+        # desde "Información de la selección" -> "Documentos" -> "Descargar"
+        scroll_until_text(page, "Información de la selección", max_steps=10)
+
+        saved_count, downloaded_paths, contract_id = download_contract_pdf_from_selection(
+            context=context,
+            page=page,
+            contract_dir=contract_dir,
+            notice_uid=notice_uid,
+        )
+
+        if contract_id:
+            result.contract_id = contract_id
+
+        result.contract_pdfs_saved = saved_count
+        result.contract_pdf_paths = " | ".join(downloaded_paths)
+
+        result.status = "ok"
+>>>>>>> 99964055b6403d5ce1e66445f7f15bee2266dad0
 
     except Exception as exc:
         print(f"  [ERROR] Falló {notice_uid}: {exc}")
