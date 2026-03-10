@@ -19,7 +19,6 @@ from playwright.sync_api import (
     TimeoutError as PlaywrightTimeoutError,
     sync_playwright,
 )
-
 try:
     import tkinter as tk
     from tkinter import filedialog, messagebox
