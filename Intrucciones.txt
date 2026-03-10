@@ -1,0 +1,4 @@
+python -m pip install --upgrade pip
+python -m pip install playwright pandas openpyxl tkinterdnd2
+python -m playwright install chromium
+python secop_downloader.py "URL_SECOP - Ejemplo.xlsx"
